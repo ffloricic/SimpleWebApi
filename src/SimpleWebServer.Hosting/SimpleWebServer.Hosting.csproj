@@ -1,0 +1,14 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SimpleWebApi.Abstractions\SimpleWebApi.Abstractions.csproj" />
+    <ProjectReference Include="..\SimpleWebServer.Transport.HttpListener\SimpleWebServer.Transport.HttpListener.csproj" />
+  </ItemGroup>
+
+</Project>
