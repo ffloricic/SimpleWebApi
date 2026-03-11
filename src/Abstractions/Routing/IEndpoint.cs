@@ -6,6 +6,6 @@ namespace Abstractions.Routing
     {
         HttpMethod Method { get; }
         string PathPattern { get; }
-        RequestDelegate Handler { get; }
+        RequestHandler Handler { get; }
     }
 }

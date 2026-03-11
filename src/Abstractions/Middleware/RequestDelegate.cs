@@ -2,5 +2,6 @@ using Abstractions.Http;
 
 namespace Abstractions.Middleware
 {
-    public delegate Task RequestDelegate(IHttpContext context);
+    public delegate Task RequestHandler(IHttpContext context);
+    
 }

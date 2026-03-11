@@ -4,6 +4,6 @@ namespace Abstractions.Middleware
 {
     public interface IMiddleware
     {
-        Task InvokeAsync(IHttpContext context, RequestDelegate next);
+        Task InvokeAsync(IHttpContext context, RequestHandler next);
     }
 }

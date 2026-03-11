@@ -1,6 +1,6 @@
 namespace Abstractions.Http
 {
-    public enum HttpMethod
+    public enum HttpRequestMethod
     {
         GET,
         POST,
