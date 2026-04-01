@@ -10,5 +10,7 @@ namespace Abstractions.Http
         IReadOnlyDictionary<string, StringValues> Query { get; } // Parsed query parameters
         IReadOnlyDictionary<string, StringValues> Headers { get; } // HTTP headers, case-insensitive
         Task<byte[]> ReadBodyAsync(); // Request body, transport owns lifetime
+        Task<string> ReadBodyAsStringAsync();
+        Task<T?> ReadJsonAsync<T>();
     }
 }

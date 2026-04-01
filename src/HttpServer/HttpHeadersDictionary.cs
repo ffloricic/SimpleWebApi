@@ -1,9 +1,11 @@
+using Microsoft.Extensions.Primitives;
 using System.Collections.Specialized;
 
 namespace HttpServer
 {
     public sealed class HttpHeadersDictionary: HttpBaseDictionary 
     {
+        public HttpHeadersDictionary() : base() { }
         public HttpHeadersDictionary(NameValueCollection headers): base()
         {
             ArgumentNullException.ThrowIfNull(headers);

@@ -1,10 +1,12 @@
+using Abstractions.Http;
 using Microsoft.Extensions.Primitives;
 using System.Collections;
 using System.Collections.Specialized;
+using System.Net;
 
 namespace HttpServer
 {
-    public abstract class HttpBaseDictionary : IReadOnlyDictionary<string, StringValues>
+    public abstract class HttpBaseDictionary : IHttpBaseDictionary
     {
         protected readonly Dictionary<string, StringValues> _dictionary;
 
@@ -13,23 +15,41 @@ namespace HttpServer
             _dictionary = new Dictionary<string, StringValues>(StringComparer.OrdinalIgnoreCase);
         }
 
-        protected void Add(string key, StringValues values)
+        public void Add(string key, StringValues newValues)
         {
-            _dictionary.Add(
-            key,
-            values);
+            if (_dictionary.TryGetValue(key, out _))
+            {
+                _dictionary[key] = StringValues.Concat(_dictionary[key], newValues);
+            }
+            else
+            {
+                _dictionary[key] = newValues;
+            }
         }
 
-        protected void Add(string key, string[]? values) =>
+        public void Add(string key, string[]? values) =>
             _dictionary.Add(
                         key,
-                        (values is null || values?.Length == 0)
-                        ? StringValues.Empty : values);
+                        new StringValues((values is null || values?.Length == 0) ? StringValues.Empty : values));
 
-        public StringValues this[string key] =>
-            _dictionary.TryGetValue(key, out var value)
-            ? value
-            : StringValues.Empty;
+        public void Add(string key, string value)
+        {
+            Add(key, new StringValues(value));
+        }
+
+        public StringValues this[string key]
+        {
+            get
+            {
+                return _dictionary.TryGetValue(key, out var value)
+                                    ? value
+                                    : StringValues.Empty;
+            }
+            set
+            {
+                Add(key, value);
+            }
+        }
 
         public IEnumerable<string> Keys => _dictionary.Keys;
 
@@ -47,5 +67,10 @@ namespace HttpServer
             _dictionary.GetEnumerator();
 
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+
+        public bool Remove(string key)
+        {
+            return _dictionary.Remove(key);
+        }
     }
 }

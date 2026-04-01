@@ -6,8 +6,8 @@ namespace Abstractions.Http
     {
         /// <summary>
         /// Starts accepting incoming connections.
-        /// This method MUST NOT wait for request execution to complete.
         /// </summary>
-        Task StartAsync(CancellationToken cancellationToken);
+        Task StartAsync(CancellationToken externalToken);
+        ValueTask DisposeAsync(ShutdownMode mode = ShutdownMode.Graceful);
     }
 }

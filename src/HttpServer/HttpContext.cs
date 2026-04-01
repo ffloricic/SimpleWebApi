@@ -11,7 +11,7 @@ namespace HttpServer
         public IHttpRequest Request { get; }
         public IHttpResponse Response { get; }
 
-        public CancellationToken CancellationToken  => _cancellationToken;
+        public CancellationToken RequestCancellationToken => _cancellationToken;
         public HttpContext(
             HttpListenerContext listenerContext,
             CancellationToken cancellationToken)

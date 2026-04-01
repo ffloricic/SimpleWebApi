@@ -4,6 +4,6 @@ namespace Abstractions.Http
     {
         IHttpRequest Request { get; }
         IHttpResponse Response { get; }
-        CancellationToken CancellationToken { get; }
+        CancellationToken RequestCancellationToken { get; }
     }
 }

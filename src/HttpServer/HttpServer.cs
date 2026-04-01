@@ -1,11 +1,14 @@
 using Abstractions.Http;
 using Abstractions.Middleware;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Net;
 
 namespace HttpServer
 {
-    #warning before final version don't forget to finish TODO list
+#warning before final version don't forget to finish TODO list
     public class HttpServer : IHttpServer
     {
         // TODO: -> put into configuration file 
@@ -16,107 +19,161 @@ namespace HttpServer
             "Content-Length"
         ];
 
-        private HttpListener _listener;
-        private CancellationTokenSource _cts;
-        private RequestHandler _requestHandler;
-        private readonly ConcurrentDictionary<Task, byte> _activeRequests = new();
+        private readonly HttpListener _listener;
+        private CancellationTokenSource _shutDownCts;
+        private readonly RequestHandler _requestHandler;
+        private readonly ConcurrentDictionary<Task, /*byte*/CancellationTokenSource> _activeRequests = new();
+        private readonly ILogger<HttpServer> _logger;
+        private volatile ServerState _state = ServerState.Created;
+        private ShutdownMode _shutdownMode = ShutdownMode.Graceful;
+        /* TODO: -> put that constant in config file*/
+        private readonly TimeSpan _shutdownTimeout = TimeSpan.FromSeconds(30);
+        private readonly TimeSpan _requestRecallTimeout = TimeSpan.FromSeconds(30);
+        public ServerState State => _state;
 
         public HttpServer(
             string prefix,
-            RequestHandler requestHandler)
+            RequestHandler requestHandler,
+            ILogger<HttpServer>? logger)
         {
             // TODO: prefix Url should be stored in application.settings file
             // TODO: check first if prefix is in corect format
             // TODO: if not. Log the situation and raise exception
             _listener = new HttpListener();
             _listener.Prefixes.Add(prefix);
-
             _requestHandler = requestHandler;
+            _logger = logger ?? NullLogger<HttpServer>.Instance;
         }
 
-        public async Task StartAsync(CancellationToken cancellationToken)
+        public async Task StartAsync(CancellationToken externalToken)
         {
-            _cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            if (_state != ServerState.Created)
+                throw new InvalidOperationException("Server already started...");
+
+            _shutDownCts = CancellationTokenSource.CreateLinkedTokenSource(externalToken);
+            //_shutDownToken = _cts.Token;
 
             _listener.Start();
-            // TODO: log listener start
-            RegisterListenerStopProcedure();
+            _state = ServerState.Running;
+            _logger.LogInformation("Server started on {Url}", _listener.Prefixes.First());
+
+            await AcceptLoopAsync();
+        }
+
+        private async Task AcceptLoopAsync()
+        {
+            HttpListenerContext? httpContext = null;
+
+            while (true)
+            {
+                try
+                {
+                    httpContext = await _listener.GetContextAsync();
+
+                    _logger.LogDebug("Request received: {Method} {Path}",
+                        httpContext.Request.HttpMethod,
+                        httpContext.Request.Url?.AbsolutePath);
+                }
+                catch (HttpListenerException ex) when (_state != ServerState.Running)
+                {
+                    _logger.LogInformation(ex, "HttpListenerException: {Message}", ex.Message);
+                    break;
+                }
+                catch (ObjectDisposedException ex) when (_state != ServerState.Running)
+                {
+                    _logger.LogInformation(ex, "Exception in HttpServer process loop: {Message}", ex.Message);
+                    break;
+                }
+
+                if (httpContext == null)
+                    continue;
+
+                if (_state != ServerState.Running)
+                {
+                    RejectRequest(httpContext);
+                }
+
+                _ = ProcessRequestTrackedAsync(httpContext);
+            }
+        }
+
+        private void RejectRequest(HttpListenerContext context)
+        {
+            try
+            {
+                context.Response.StatusCode = (int)HttpStatusCode.ServiceUnavailable;
+                context.Response.Close();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug($"Failed to reject request: {ex.Message}");
+            }
+        }
+
+        private async Task ProcessRequestTrackedAsync(HttpListenerContext context)
+        {
+            // TODO: -> put the constant below into configuration file 
+            using var requestOwnCts = new CancellationTokenSource(_requestRecallTimeout);
+
+            var task = ProcessRequestAsync(context, requestOwnCts);
+            AddTaskToActiveRequests(task, requestOwnCts);
 
             try
             {
-                while (!_cts.IsCancellationRequested)
-                {
-                    var httpContext = await _listener.GetContextAsync();
-                    var task = ProcessRequestAsync(httpContext, _cts.Token);
-                    AddTaskToActiveRequests(task);
-
-                    _ = task.ContinueWith(t => {
-                        RemoveTaskFromActiveRequests(t);
-
-                    }, TaskContinuationOptions.ExecuteSynchronously);
-                }
+                await task;
             }
-            catch (HttpListenerException)
+            catch (Exception ex)
             {
-                // TODO: log when listener Stop procedure is called
-            }
-            finally
-            {
-                await WaitActiveRequestsToStop();
+                RemoveTaskFromActiveRequests(task);
             }
         }
 
         private async Task ProcessRequestAsync(
             HttpListenerContext httpListenerContext,
-            CancellationToken cancellationToken)
+            CancellationTokenSource requestCts)
         {
             ArgumentNullException.ThrowIfNull(httpListenerContext);
 
-            var context = new HttpContext(httpListenerContext, cancellationToken);
-
             try
             {
-                await _requestHandler(context);
-                await WriteResponseAsync(httpListenerContext, context.Response, _cts.Token);
-            }
-            catch (OperationCanceledException) when (_cts.Token.IsCancellationRequested)
-            {
-                // expected during shutdown
-                // TODO: -> log 
+                var context = new HttpContext(httpListenerContext, requestCts.Token);
+
+                using (_logger.BeginScope(new Dictionary<string, object>
+                {
+                    ["TraceId"] = Guid.NewGuid(),
+                    ["Path"] = httpListenerContext.Request.Url?.AbsolutePath ?? ""
+                }))
+                {
+                    await _requestHandler(context);
+                }
+
+                await WriteResponseAsync(httpListenerContext.Response, context.Response);
+                _logger.LogInformation("Response sent: {StatusCode}", httpListenerContext.Response.StatusCode);
             }
             catch (IOException ex)
             {
-                // client disconnected
-                // TODO: -> log 
+                requestCts.Cancel();
+                _logger.LogDebug("Client disconnected (IO).");
             }
             catch (HttpListenerException ex)
             {
-                // aborted request
-                // TODO: -> log 
+                requestCts.Cancel();
+                _logger.LogDebug("Client disconnected (listener).");
+            }
+            catch (OperationCanceledException)
+            {
+                _logger.LogDebug("Request cancelled.");
             }
             catch (Exception ex)
             {
-                // TODO: log, possibly write 500
+                // TODO: possibly write 500
+                _logger.LogInformation(ex, "Unhalted exception during request");
             }
         }
 
-        private void RegisterListenerStopProcedure()
+        private void AddTaskToActiveRequests(Task newTask, CancellationTokenSource cts)
         {
-            try
-            {
-                _cts.Token.Register(() => {
-                    _listener.Stop();
-                });
-            }
-            catch
-            {
-                // TODO: -> log listener stop
-            }
-        }
-
-        private void AddTaskToActiveRequests(Task newTask)
-        {
-            _activeRequests.TryAdd(newTask, 0);
+            _activeRequests.TryAdd(newTask, cts);
         }
 
         private void RemoveTaskFromActiveRequests(Task task)
@@ -126,46 +183,24 @@ namespace HttpServer
 
         private async Task WaitActiveRequestsToStop()
         {
+            _logger.LogInformation("Waiting for {Count} active request", _activeRequests.Count);
+
             if (_activeRequests.IsEmpty)
             {
                 return;
             }
 
-            try
-            {
-                await Task.WhenAny(
-                    Task.WhenAll(_activeRequests.Keys),
-                    Task.Delay(TimeSpan.FromSeconds(30/* TODO: -> put that constant in config file*/))
-                    );
-            }
-            catch
-            {
-                // Ignore — requests may fail during shutdown
-            }
-        }
+            _logger.LogDebug("Waiting for {Count} active request", _activeRequests.Count);
 
-        public async Task StopAsync()
-        {
-            _cts.Cancel();
+            await Task.WhenAll([.. _activeRequests.Keys]);
 
-            try
-            {
-                _listener.Stop();
-            }
-            catch
-            { }
-
-            await WaitActiveRequestsToStop();
-            _listener.Close();
+            _logger.LogDebug("Number of active request: {Count}", _activeRequests.Count);
         }
 
         public async Task WriteResponseAsync(
-            HttpListenerContext listenerContext,
-            IHttpResponse response,
-            CancellationToken cancellationToken)
+            HttpListenerResponse nativeResponse,
+            IHttpResponse response)
         {
-            var nativeResponse = listenerContext.Response;
-
             // apply status code
             nativeResponse.StatusCode = response.StatusCode;
 
@@ -199,19 +234,94 @@ namespace HttpServer
                 }
             }
 
-            // set Content-length automatically
-            nativeResponse.ContentLength64 = response.Body.Length;
+            if (response.Body != null)
+            {
+                // set Content-length automatically
+                nativeResponse.ContentLength64 = response.Body.Length;
 
-            // reset position
-            response.Body.Position = 0;
+                // reset position
+                response.Body.Position = 0;
 
-            // copy buffer to network stream
-            await response.Body.CopyToAsync(nativeResponse.OutputStream, cancellationToken);
+                // copy buffer to network stream
+                try
+                {
+                    await response.Body.CopyToAsync(nativeResponse.OutputStream);
+                    await nativeResponse.OutputStream.FlushAsync();
+                }
+                catch (ObjectDisposedException)
+                {
+                    _logger.LogDebug("Connection closed while writing response.");
+                }
+                catch (HttpListenerException)
+                {
+                    _logger.LogDebug("Client disconected during response write.");
+                }
+                catch (IOException)
+                {
+                    _logger.LogDebug("I/O aborted (likely client disconect).");
+                }
 
-            // flush and close
-            await nativeResponse.OutputStream.FlushAsync(cancellationToken);
+            }
+
             nativeResponse.OutputStream.Close();
             nativeResponse.Close();
+        }
+
+        public async ValueTask DisposeAsync(ShutdownMode mode = ShutdownMode.Graceful)
+        {
+            if (_state == ServerState.Stopped)
+                return;
+
+            _shutdownMode = mode;
+            _state = ServerState.Stopping;
+
+            _logger.LogInformation("Server shutting down... Mode: {Mode}", mode);
+
+            if (mode == ShutdownMode.Immediate)
+            {
+                foreach(CancellationTokenSource cts in _activeRequests.Values)
+                {
+                    cts.Cancel();
+                }
+            }
+
+            var waitActiveTasks = WaitActiveRequestsToStop();
+
+            // wait with timeout
+            var completed = await Task.WhenAny(waitActiveTasks, Task.Delay(_shutdownTimeout));
+
+            // this is mostly for the case of gracefull shutdown but wouldn't bother also in the case of immediate
+            if (completed != waitActiveTasks)
+            {
+                _logger.LogWarning("Shutdown timeout reached. Cancelling remaining requests.");
+
+                foreach (CancellationTokenSource cts in _activeRequests.Values)
+                {
+                    cts.Cancel();
+                }
+
+                // now must complete
+                await waitActiveTasks;
+            }
+
+            try
+            {
+                _listener.Stop();
+                _listener.Close();
+            }
+            catch { }
+
+            _state = ServerState.Stopped;
+
+            try
+            {
+                _listener.Close();
+            }
+            catch { }
+
+            _logger.LogInformation("Server stopped.");
+
+            _shutDownCts.Dispose();
         }
     }
 }

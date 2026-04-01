@@ -12,7 +12,8 @@ namespace HttpServer
         private readonly MemoryStream _buffer;
         public int StatusCode { get; set; } = 200;
 
-        public IDictionary<string, StringValues> Headers { get; }
+        public IHttpBaseDictionary Headers { get; }
+
         public Stream Body  => _buffer;
 
         public HttpResponse(HttpListenerResponse response)
@@ -21,7 +22,7 @@ namespace HttpServer
 
             _nativeResponse = response;
             _buffer = new MemoryStream();
-            Headers = new Dictionary<string, StringValues>(StringComparer.OrdinalIgnoreCase);
+            Headers = new HttpHeadersDictionary();
         }
 
         public void AddCookie(string cookie)
@@ -33,19 +34,20 @@ namespace HttpServer
         {
             if (!Headers.ContainsKey("Content-Type"))
             {
-                Headers["Content-Type"] = "text-plain; charset=utf-8";
+                Headers["Content-Type"] = "text/plain; charset=utf-8";
             }
 
             var bytes = Encoding.UTF8.GetBytes(text);
             await _buffer.WriteAsync(bytes);
         }
 
-        public async Task WriteJsonAsync<T>(T value, CancellationToken cancellationToken/* = default*/)
+        public async Task WriteJsonAsync<T>(T value, CancellationToken cancellationToken = default)
         {
             if (!Headers.ContainsKey("Content-Type"))
             {
                 Headers["Content-Type"] = "application/json; charset=utf-8";
             }
+
             await JsonSerializer.SerializeAsync(_buffer, value, cancellationToken: cancellationToken);
         }
 
